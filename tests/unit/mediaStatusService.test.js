@@ -275,6 +275,16 @@ describe('MQTTMediaStatusService', () => {
 			await assertDeduplicates(mqttClient, published, 'teams/microphone/control');
 		});
 
+		it('emits teams-microphone-control-changed event', async () => {
+			createService(mqttClient);
+			let emittedControlState = null;
+			mockApp.on('teams-microphone-control-changed', (state) => {
+				emittedControlState = state;
+			});
+			mockIpcMain.emit('microphone-state-changed', undefined, 'muted');
+			await flush();
+			assert.strictEqual(emittedControlState, 'muted', 'should emit control state event');
+		});
 	});
 
 	describe('Meeting-started pulse (#2587)', () => {

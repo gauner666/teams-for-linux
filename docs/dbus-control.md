@@ -32,6 +32,8 @@ Caller information is opt-in through `config.mqtt.incomingCallCaller.enabled`, i
 
 The former MQTT functional data is represented by presence/status code, call and incoming-call state, optional caller, camera, raw microphone and normalized microphone-control state, screen sharing, meeting-start pulse, and on-demand calendar results. Broker credentials, QoS, retain flags, custom topic names, and Home Assistant MQTT auto-discovery are transport settings, not callable Teams functions. D-Bus instead offers introspection, typed signals, and service-owner availability; this API does not provide Home Assistant auto-discovery over D-Bus.
 
+MQTT remains an independent, unchanged control and publishing path. Its existing command handlers, microphone-control app event, calendar input handling, root-window shortcut routing, and Home Assistant discovery are retained; they are not redirected through the D-Bus control service. The D-Bus state observer does not emit MQTT's `teams-microphone-control-changed` event. A legacy MQTT calendar request keeps its original MQTT response topic; `CalendarReceived` describes requests through the new control service.
+
 ## Copy/paste examples
 
 Run these from a terminal in the same logged-in user session (no `sudo`). For the installed `.Devel` build:

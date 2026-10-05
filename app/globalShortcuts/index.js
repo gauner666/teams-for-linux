@@ -17,7 +17,7 @@ let isRegistered = false;
  * @param {string} accelerator - The accelerator string (e.g., "Control+Shift+M")
  * @returns {Object|null} - Key and modifiers, or null for an invalid accelerator
  */
-function parseAccelerator(accelerator) {
+function parseValidatedAccelerator(accelerator) {
   if (typeof accelerator !== "string" || accelerator.length === 0 || accelerator.length > 128) return null;
   if ([...accelerator].some((character) => {
     const code = character.charCodeAt(0);
@@ -71,7 +71,7 @@ function parseAccelerator(accelerator) {
 function sendKeyboardEventToWebContents(webContents, accelerator) {
   try {
     if (!webContents || webContents.isDestroyed()) return false;
-    const parsed = parseAccelerator(accelerator);
+    const parsed = parseValidatedAccelerator(accelerator);
     if (!parsed) return false;
 
     webContents.sendInputEvent({
@@ -95,12 +95,51 @@ function sendKeyboardEventToWebContents(webContents, accelerator) {
 
 function sendKeyboardEventToWindow(window, accelerator) {
   try {
-    if (!window || window.isDestroyed()) return false;
-    return sendKeyboardEventToWebContents(window.webContents, accelerator);
+    const parsed = parseAccelerator(accelerator);
+
+    window.webContents.sendInputEvent({
+      type: "keyDown",
+      keyCode: parsed.key,
+      modifiers: parsed.modifiers
+    });
+
+    window.webContents.sendInputEvent({
+      type: "keyUp",
+      keyCode: parsed.key,
+      modifiers: parsed.modifiers
+    });
+
+    console.debug(`[GLOBAL_SHORTCUTS] Forwarded keyboard event: ${accelerator}`);
   } catch (err) {
-    console.error(`[GLOBAL_SHORTCUTS] Error sending keyboard event: ${err.message}`);
-    return false;
+    console.error(`[GLOBAL_SHORTCUTS] Error sending keyboard event for ${accelerator}: ${err.message}`);
   }
+}
+
+// Preserve the legacy MQTT/global-shortcut parser independently of D-Bus validation.
+function parseAccelerator(accelerator) {
+  const parts = accelerator.split("+");
+  const modifiers = [];
+  let key = "";
+
+  for (const part of parts) {
+    const lower = part.toLowerCase();
+    if (lower === "commandorcontrol" || lower === "cmdorctrl") {
+      modifiers.push(isMac ? "cmd" : "control");
+    } else if (lower === "command" || lower === "cmd") {
+      modifiers.push("cmd");
+    } else if (lower === "control" || lower === "ctrl") {
+      modifiers.push("control");
+    } else if (lower === "shift") {
+      modifiers.push("shift");
+    } else if (lower === "alt" || lower === "option") {
+      modifiers.push("alt");
+    } else {
+      // This is the key
+      key = part;
+    }
+  }
+
+  return { key, modifiers };
 }
 
 function register(config, mainAppWindow, app) {
@@ -134,6 +173,7 @@ function register(config, mainAppWindow, app) {
           // Forward the keyboard event to Teams by simulating the key press
           // Teams will handle it with its built-in keyboard shortcuts
           // Note: In practice, sending keyboard events works reliably without focusing the window.
+          // If issues arise on specific platforms, consider calling window.focus() before sendInputEvent.
           sendKeyboardEventToWindow(window, shortcut);
         } else {
           console.warn(`[GLOBAL_SHORTCUTS] Main window not available for shortcut: ${shortcut}`);
@@ -164,4 +204,4 @@ function register(config, mainAppWindow, app) {
   }
 }
 
-module.exports = { register, sendKeyboardEventToWindow, sendKeyboardEventToWebContents, parseAccelerator };
+module.exports = { register, sendKeyboardEventToWindow, sendKeyboardEventToWebContents, parseAccelerator: parseValidatedAccelerator };

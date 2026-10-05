@@ -83,7 +83,7 @@ describe('TeamsStateService', () => {
 
 	it('maps microphone state and turns it off on call disconnect; emits control only on changes', () => {
 		const controls = [];
-		appEmitter.on('teams-microphone-control-changed', (state) => controls.push(state));
+		service.on('microphone-control-changed', (state) => controls.push(state));
 		ipcEmitter.emit('microphone-state-changed', {}, 'silent');
 		ipcEmitter.emit('microphone-state-changed', {}, 'speaking');
 		assert.deepEqual(controls, ['unmuted']);
@@ -94,6 +94,8 @@ describe('TeamsStateService', () => {
 	});
 
 	it('rejects invalid microphone payloads before changing global or per-profile state', () => {
+		const mqttControls = [];
+		appEmitter.on('teams-microphone-control-changed', (state) => mqttControls.push(state));
 		const active = {};
 		service.dispose();
 		service = new TeamsStateService({ mqtt: {} }, { getActiveWebContents: () => active });
@@ -106,6 +108,21 @@ describe('TeamsStateService', () => {
 		assert.equal(service.getState().microphoneState, 'unknown');
 		assert.equal(service.getState().microphoneControlState, 'unknown');
 		assert.deepEqual(changes, []);
+		assert.deepEqual(mqttControls, []);
+	});
+
+	it('keeps D-Bus microphone observations separate from the legacy MQTT app event', () => {
+		const mqttControls = [];
+		const ownControls = [];
+		const snapshots = [];
+		appEmitter.on('teams-microphone-control-changed', (state) => mqttControls.push(state));
+		service.on('microphone-control-changed', (state) => ownControls.push(state));
+		service.on('state-changed', (snapshot) => snapshots.push(snapshot));
+		ipcEmitter.emit('microphone-state-changed', {}, 'muted');
+		ipcEmitter.emit('microphone-state-changed', {}, 'silent');
+		assert.deepEqual(mqttControls, [], 'D-Bus must not change MQTT command guard state or timing');
+		assert.deepEqual(ownControls, ['muted', 'unmuted']);
+		assert.deepEqual(snapshots.map((state) => state.microphoneControlState), ['muted', 'unmuted']);
 	});
 
 	it('expires meeting pulse after the configured delay', async () => {

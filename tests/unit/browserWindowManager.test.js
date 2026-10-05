@@ -159,7 +159,7 @@ describe('BrowserWindowManager incoming call routing', () => {
 		assert.equal(manager.performIncomingCallAction('DECLINE'), false);
 	});
 
-	it('routes the incoming-call toast through the common sender-aware action path', async () => {
+	it('preserves the original root-window toast action independently of D-Bus routing', async () => {
 		const manager = new BrowserWindowManager({ config: {} });
 		const rootSent = [];
 		const ringingSent = [];
@@ -176,7 +176,7 @@ describe('BrowserWindowManager incoming call routing', () => {
 		manager.hasIncomingCall = true;
 		manager.incomingCallWebContents = { isDestroyed: () => false, send: (...args) => ringingSent.push(args) };
 		toastAction('DECLINE');
-		assert.deepEqual(ringingSent, [['incoming-call-action', 'DECLINE']]);
-		assert.deepEqual(rootSent, []);
+		assert.deepEqual(ringingSent, []);
+		assert.deepEqual(rootSent, [['incoming-call-action', 'DECLINE']]);
 	});
 });

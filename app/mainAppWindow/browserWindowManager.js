@@ -70,7 +70,7 @@ class BrowserWindowManager {
     }
 
     this.incomingCallToast = new IncomingCallToast((action) => {
-      this.performIncomingCallAction(action);
+      this.window.webContents.send("incoming-call-action", action);
     });
 
     return this.window;
@@ -245,9 +245,10 @@ class BrowserWindowManager {
 
   assignOnIncomingCallEndedHandler() {
     return async (e) => {
-      if (this.incomingCallWebContents && e?.sender !== this.incomingCallWebContents) return;
-      this.hasIncomingCall = false;
-      this.incomingCallWebContents = null;
+      if (!this.incomingCallWebContents || e?.sender === this.incomingCallWebContents) {
+        this.hasIncomingCall = false;
+        this.incomingCallWebContents = null;
+      }
       this.handleOnIncomingCallEnded();
       app.emit('teams-incoming-call-ended');
     };
