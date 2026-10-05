@@ -207,7 +207,6 @@ class MQTTMediaStatusService {
 		const topic = `${this.#topicPrefix}/${this.#mediaTopics.microphoneControl}`;
 		await this.#mqttClient.publish(topic, controlState, { retain: true });
 		console.debug('[MQTTMediaStatusService] Microphone control state changed to', controlState, 'published to', topic);
-		app.emit('teams-microphone-control-changed', controlState);
 	}
 
 	async #handleScreenSharingChanged(isSharing) {

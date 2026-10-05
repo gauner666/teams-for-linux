@@ -95,7 +95,7 @@ class MeetingStartDetector {
 		this.#ipcRenderer = ipcRenderer;
 
 		const detectionConfig = config.mqtt?.meetingStartDetection;
-		if (!config.mqtt?.enabled || !detectionConfig?.enabled) {
+		if ((!config.mqtt?.enabled && process.platform !== 'linux') || !detectionConfig?.enabled) {
 			console.debug('[MeetingStartDetector] Disabled');
 			return;
 		}

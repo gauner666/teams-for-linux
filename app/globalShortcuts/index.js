@@ -15,57 +15,91 @@ let isRegistered = false;
  * Parses an Electron accelerator string into key and modifiers.
  *
  * @param {string} accelerator - The accelerator string (e.g., "Control+Shift+M")
- * @returns {Object} - Object with key and modifiers array
+ * @returns {Object|null} - Key and modifiers, or null for an invalid accelerator
  */
 function parseAccelerator(accelerator) {
+  if (typeof accelerator !== "string" || accelerator.length === 0 || accelerator.length > 128) return null;
+  if ([...accelerator].some((character) => {
+    const code = character.charCodeAt(0);
+    return code < 32 || code === 127;
+  })) return null;
   const parts = accelerator.split("+");
   const modifiers = [];
-  let key = "";
+  let key = null;
+  const seenModifiers = new Set();
+  const punctuationKeys = new Set([",", ".", ";", "'", "`", "-", "/", "=", "[", "]", "\\"]);
+  const keyAliases = new Set([
+    "Backspace", "Tab", "Enter", "Return", "Escape", "Esc", "Space", "Delete", "Insert", "Home", "End", "PageUp", "PageDown",
+    "Up", "Down", "Left", "Right", "PrintScreen", "Plus", "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
+    "F13", "F14", "F15", "F16", "F17", "F18", "F19", "F20", "F21", "F22", "F23", "F24", "VolumeUp", "VolumeDown", "VolumeMute",
+    "MediaNextTrack", "MediaPreviousTrack", "MediaStop", "MediaPlayPause", "NumLock", "ScrollLock", "CapsLock", "Clear", "Pause",
+    "Numpad0", "Numpad1", "Numpad2", "Numpad3", "Numpad4", "Numpad5", "Numpad6", "Numpad7", "Numpad8", "Numpad9",
+    "NumpadDecimal", "NumpadDivide", "NumpadMultiply", "NumpadSubtract", "NumpadAdd", "NumpadEnter", "NumpadEqual",
+  ]);
 
   for (const part of parts) {
     const lower = part.toLowerCase();
-    if (lower === "commandorcontrol" || lower === "cmdorctrl") {
-      modifiers.push(isMac ? "cmd" : "control");
-    } else if (lower === "command" || lower === "cmd") {
-      modifiers.push("cmd");
-    } else if (lower === "control" || lower === "ctrl") {
-      modifiers.push("control");
-    } else if (lower === "shift") {
-      modifiers.push("shift");
-    } else if (lower === "alt" || lower === "option") {
-      modifiers.push("alt");
+    let modifier;
+    if (lower === "commandorcontrol" || lower === "cmdorctrl") modifier = isMac ? "cmd" : "control";
+    else if (lower === "command" || lower === "cmd") modifier = "cmd";
+    else if (lower === "control" || lower === "ctrl") modifier = "control";
+    else if (lower === "shift") modifier = "shift";
+    else if (lower === "alt" || lower === "option") modifier = "alt";
+
+    if (modifier) {
+      if (seenModifiers.has(modifier)) return null;
+      seenModifiers.add(modifier);
+      modifiers.push(modifier);
     } else {
-      // This is the key
-      key = part;
+      if (key !== null) return null;
+      if (/^[a-z0-9]$/i.test(part)) key = part.toUpperCase();
+      else if (punctuationKeys.has(part)) key = part;
+      else if (keyAliases.has(part)) key = part;
+      else return null;
     }
   }
 
+  if (key === null) return null;
   return { key, modifiers };
 }
 
 /**
- * @param {BrowserWindow} window - The window to send the event to
+ * @param {WebContents} webContents - The Teams renderer to send the event to
  * @param {string} accelerator - The accelerator string (e.g., "Control+Shift+M")
+ * @returns {boolean} - Whether both input events were dispatched
  */
-function sendKeyboardEventToWindow(window, accelerator) {
+function sendKeyboardEventToWebContents(webContents, accelerator) {
   try {
+    if (!webContents || webContents.isDestroyed()) return false;
     const parsed = parseAccelerator(accelerator);
+    if (!parsed) return false;
 
-    window.webContents.sendInputEvent({
+    webContents.sendInputEvent({
       type: "keyDown",
       keyCode: parsed.key,
       modifiers: parsed.modifiers
     });
 
-    window.webContents.sendInputEvent({
+    webContents.sendInputEvent({
       type: "keyUp",
       keyCode: parsed.key,
       modifiers: parsed.modifiers
     });
 
-    console.debug(`[GLOBAL_SHORTCUTS] Forwarded keyboard event: ${accelerator}`);
+    return true;
   } catch (err) {
-    console.error(`[GLOBAL_SHORTCUTS] Error sending keyboard event for ${accelerator}: ${err.message}`);
+    console.error(`[GLOBAL_SHORTCUTS] Error sending keyboard event: ${err.message}`);
+    return false;
+  }
+}
+
+function sendKeyboardEventToWindow(window, accelerator) {
+  try {
+    if (!window || window.isDestroyed()) return false;
+    return sendKeyboardEventToWebContents(window.webContents, accelerator);
+  } catch (err) {
+    console.error(`[GLOBAL_SHORTCUTS] Error sending keyboard event: ${err.message}`);
+    return false;
   }
 }
 
@@ -100,7 +134,6 @@ function register(config, mainAppWindow, app) {
           // Forward the keyboard event to Teams by simulating the key press
           // Teams will handle it with its built-in keyboard shortcuts
           // Note: In practice, sending keyboard events works reliably without focusing the window.
-          // If issues arise on specific platforms, consider calling window.focus() before sendInputEvent.
           sendKeyboardEventToWindow(window, shortcut);
         } else {
           console.warn(`[GLOBAL_SHORTCUTS] Main window not available for shortcut: ${shortcut}`);
@@ -131,4 +164,4 @@ function register(config, mainAppWindow, app) {
   }
 }
 
-module.exports = { register, sendKeyboardEventToWindow };
+module.exports = { register, sendKeyboardEventToWindow, sendKeyboardEventToWebContents, parseAccelerator };

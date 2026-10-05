@@ -21,7 +21,7 @@ const { installIpcSecurity } = require("./security/ipcSecurity");
 const { installWebviewGuard } = require("./security/webviewGuard");
 const { sanitize: sanitizePii } = require("./utils/logSanitizer");
 const { isPreLoginAuthNoise, parseChunkLoadFailure, formatChunkLoadWarning } = require("./utils/rendererErrors");
-const { register: registerGlobalShortcuts, sendKeyboardEventToWindow } = require("./globalShortcuts");
+const { register: registerGlobalShortcuts } = require("./globalShortcuts");
 const CommandLineManager = require("./startup/commandLine");
 const NotificationService = require("./notifications/service");
 const CustomNotificationManager = require("./notificationSystem");
@@ -31,6 +31,8 @@ const ScreenSharingService = require("./screenSharing/service");
 const PartitionsManager = require("./partitions/manager");
 const ProfilesManager = require("./profilesManager");
 const ProfileViewManager = require("./mainAppWindow/profileViewManager");
+const TeamsControlService = require("./control/teamsControlService");
+const TeamsStateService = require("./control/teamsStateService");
 const IdleMonitor = require("./idle/monitor");
 const AutoUpdater = require("./autoUpdater");
 const WebAuthn = require("./webauthn");
@@ -133,11 +135,12 @@ if (config.multiAccount?.enabled && intuneEnabled) {
 }
 
 let userStatus = -1;
-let microphoneControlState = 'unknown';
 let mqttClient = null;
 let mqttMediaStatusService = null;
 let haDiscovery = null;
 let graphApiClient = null;
+let teamsStateService = null;
+let teamsControlService = null;
 let quickChatManager = null;
 
 const { createPlayer } = require("./audio/player");
@@ -174,6 +177,7 @@ const profilesManager = new ProfilesManager(appConfig.settingsStore);
 // multi-account flag is on; the manager is wired to the main window
 // after `mainAppWindow.onAppReady` resolves.
 let profileViewManager = null;
+let dbusControlService = null;
 
 const idleMonitor = new IdleMonitor(config, getUserStatus);
 
@@ -228,6 +232,13 @@ if (gotTheLock) {
   app.on("render-process-gone", onRenderProcessGone);
   app.on("will-quit", async () => {
     console.debug("will-quit");
+    teamsStateService?.dispose();
+    teamsControlService?.dispose();
+    try {
+      dbusControlService?.stop();
+    } catch (error) {
+      console.warn("[DBUS_CONTROL] Failed to stop service", { message: error.message });
+    }
     if (mqttClient) {
       await mqttClient.disconnect();
     }
@@ -443,84 +454,40 @@ function onAppTerminated() {
   app.quit();
 }
 
-function handleShortcutCommand({ action, shortcut }) {
-  if (!shortcut) return;
-
-  const window = mainAppWindow.getWindow();
-  if (window && !window.isDestroyed()) {
-    sendKeyboardEventToWindow(window, shortcut);
-    console.info(`[MQTT] Executed command '${action}' -> ${shortcut}`);
-  } else {
-    console.warn(`[MQTT] Cannot execute command '${action}': window not available`);
+function getControlWebContents() {
+  try {
+    const active = profileViewManager?.getActiveWebContents();
+    if (active && !active.isDestroyed()) return active;
+    const window = mainAppWindow.getWindow();
+    return window && !window.isDestroyed() ? window.webContents : null;
+  } catch {
+    return null;
   }
 }
 
 function initializeMqtt() {
   mqttClient = new MQTTClient(config);
-
-  app.on('teams-microphone-control-changed', (state) => {
-    microphoneControlState = state;
-  });
-
-  async function handleGetCalendarCommand({ startDate, endDate }) {
-    if (!startDate || !endDate) {
-      console.error('[MQTT] get-calendar requires startDate and endDate');
-      return;
-    }
-
-    if (Number.isNaN(Date.parse(startDate)) || Number.isNaN(Date.parse(endDate))) {
-      console.error('[MQTT] get-calendar requires startDate and endDate in valid ISO 8601 format');
-      return;
-    }
-
-    if (!graphApiClient) {
-      console.error('[MQTT] get-calendar failed: Graph API client not initialized');
-      return;
-    }
-
-    console.info(`[MQTT] Fetching calendar events from ${startDate} to ${endDate}`);
-
-    try {
-      const result = await graphApiClient.getCalendarView(startDate, endDate);
-
-      if (result.success) {
-        await mqttClient.publishToTopic('calendar', result);
-        console.info('[MQTT] Calendar data published to teams/calendar topic');
-      } else {
-        console.error('[MQTT] Failed to get calendar:', result.error);
-      }
-    } catch (error) {
-      console.error('[MQTT] Error fetching calendar:', error);
-    }
-  }
-
   async function handleMqttCommand(command) {
-    const { action } = command;
-
-    if (action === 'get-calendar') {
-      await handleGetCalendarCommand(command);
-    } else if (action === 'mute' || action === 'unmute') {
-      const desiredState = action === 'mute' ? 'muted' : 'unmuted';
-
-      if (microphoneControlState === desiredState) {
-        console.info(`[MQTT] Ignoring '${action}' command: microphone is already ${desiredState}`);
+    try {
+      const action = command.action;
+      if (action === 'get-calendar') {
+        const result = await teamsControlService.getCalendar(command.startDate, command.endDate);
+        if (result.success) await mqttClient.publishToTopic('calendar', result);
+        else console.warn('[MQTT] Calendar request failed');
         return;
       }
-
-      if (microphoneControlState !== 'muted' && microphoneControlState !== 'unmuted') {
-        if (command.force === true) {
-          console.warn(`[MQTT] Executing '${action}' with unknown microphone control state due to force=true`);
-          handleShortcutCommand(command);
-          return;
-        }
-
-        console.warn(`[MQTT] Ignoring '${action}' command: microphone control state is '${microphoneControlState}'. Use force=true to override.`);
-        return;
-      }
-
-      handleShortcutCommand(command);
-    } else {
-      handleShortcutCommand(command);
+      const dispatched = action === 'toggle-mute' ? teamsControlService.toggleMute()
+        : action === 'mute' ? teamsControlService.mute(command.force === true)
+          : action === 'unmute' ? teamsControlService.unmute(command.force === true)
+            : action === 'toggle-video' ? teamsControlService.toggleVideo()
+              : action === 'toggle-hand-raise' ? teamsControlService.toggleHandRaise()
+                : action === 'leave' ? teamsControlService.leaveCall() : false;
+      if (dispatched) console.info(`[MQTT] Executed command '${action}'`);
+      else console.info(`[MQTT] Command '${action}' was not dispatched`);
+    } catch {
+      // EventEmitter does not await async command listeners. Contain failures,
+      // including broker publish errors, without logging private calendar data.
+      console.warn('[MQTT] Command failed');
     }
   }
 
@@ -682,9 +649,18 @@ async function handleAppReady() {
 
     initializeCacheManagement();
 
-    if (config.mqtt?.enabled) {
-      initializeMqtt();
-    }
+    teamsStateService = new TeamsStateService(config, {
+      getActiveWebContents: getControlWebContents,
+    });
+    teamsStateService.initialize();
+    teamsControlService = new TeamsControlService({
+      getShortcutWebContents: getControlWebContents,
+      performIncomingCallAction: (action) => mainAppWindow.performIncomingCallAction(action),
+      stateService: teamsStateService,
+      getGraphApiClient: () => graphApiClient,
+    });
+    // Keep MQTT subscribed before the Teams renderer can send its first event.
+    if (config.mqtt?.enabled) initializeMqtt();
 
     loadMenuToggleSettings();
 
@@ -735,12 +711,26 @@ async function handleAppReady() {
       }
     }
 
+    if (process.platform === "linux") {
+      try {
+        const DBusControlService = require("./dbus/controlService");
+        dbusControlService = new DBusControlService(teamsControlService);
+        dbusControlService.start();
+      } catch (error) {
+        dbusControlService = null;
+        console.warn("[DBUS_CONTROL] Service unavailable; continuing without D-Bus control", { message: error.message });
+      }
+    }
+
     if (process.platform === "linux" && config.auth?.webauthn?.enabled) {
       await WebAuthn.initialize(mainAppWindow.getWindow(), config);
     }
 
     initializeGraphApiClient();
     registerGraphApiHandlers(ipcMain, graphApiClient);
+    if (config.multiAccount?.enabled) {
+      profilesManager.on("switch", () => setImmediate(() => teamsControlService?.refreshState()));
+    }
     initializeQuickChat();
     registerGlobalShortcuts(config, mainAppWindow, app);
     initializeAutoUpdater();
@@ -786,7 +776,8 @@ async function requestMediaAccess() {
 }
 
 async function userStatusChangedHandler(_event, options) {
-  userStatus = options.data.status;
+  userStatus = options?.data?.status;
+  teamsStateService?.setPresence(userStatus);
 
   if (mqttClient) {
     try {

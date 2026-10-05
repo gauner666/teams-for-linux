@@ -86,18 +86,35 @@ describe('SpeakingIndicator', () => {
 		cleanup();
 	});
 
-	it('does not patch RTCPeerConnection when both overlay and MQTT are disabled', () => {
+	it('patches RTCPeerConnection on Linux even when overlay and MQTT are disabled', () => {
 		setupGlobals();
 		const { instance } = loadSpeakingIndicator();
 		const refBefore = globalThis.RTCPeerConnection;
 
-		instance.init({ media: { microphone: { speakingIndicator: false } }, mqtt: { enabled: false } });
+		instance.init({ media: { microphone: { speakingIndicator: false } }, mqtt: { enabled: false } }, null);
 
-		assert.strictEqual(
+		if (process.platform === 'linux') {
+			assert.notStrictEqual(globalThis.RTCPeerConnection, refBefore,
+				'Linux call/media state is observed for the D-Bus API');
+		} else assert.strictEqual(
 			globalThis.RTCPeerConnection,
 			refBefore,
 			'RTCPeerConnection should remain unchanged when both features are disabled'
 		);
+	});
+
+	it('preserves disabled behavior off Linux when overlay and MQTT are disabled', () => {
+		setupGlobals();
+		const { instance } = loadSpeakingIndicator();
+		const refBefore = globalThis.RTCPeerConnection;
+		const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+		Object.defineProperty(process, 'platform', { ...descriptor, value: 'darwin' });
+		try {
+			instance.init({ media: { microphone: { speakingIndicator: false } }, mqtt: { enabled: false } });
+		} finally {
+			Object.defineProperty(process, 'platform', descriptor);
+		}
+		assert.strictEqual(globalThis.RTCPeerConnection, refBefore);
 	});
 
 	it('patches RTCPeerConnection when overlay is enabled', () => {
@@ -126,6 +143,20 @@ describe('SpeakingIndicator', () => {
 			refBefore,
 			'RTCPeerConnection should be patched for call detection when MQTT is enabled'
 		);
+	});
+
+	it('keeps media state IPC active on Linux with MQTT disabled', { skip: process.platform !== 'linux' }, () => {
+		setupGlobals();
+		const { instance, mockActivityHub } = loadSpeakingIndicator();
+		const ipcRenderer = { send: mock.fn() };
+		instance.init({ mqtt: { enabled: false } }, ipcRenderer);
+		const disconnected = mockActivityHub.on.mock.calls.find((call) => call.arguments[0] === 'call-disconnected');
+		assert.ok(disconnected, 'call lifecycle monitor initializes without MQTT');
+		disconnected.arguments[1]();
+		assert.ok(ipcRenderer.send.mock.calls.some((call) =>
+			call.arguments[0] === 'microphone-state-changed' && call.arguments[1] === 'off'));
+		assert.ok(ipcRenderer.send.mock.calls.some((call) =>
+			call.arguments[0] === 'camera-state-changed' && call.arguments[1] === false));
 	});
 
 	it('registers call lifecycle events on activityHub', () => {
