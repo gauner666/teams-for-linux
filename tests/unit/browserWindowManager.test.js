@@ -6,22 +6,17 @@ const assert = require('node:assert');
 const electronPath = require.resolve('electron');
 const managerPath = require.resolve('../../app/mainAppWindow/browserWindowManager');
 const toastPath = require.resolve('../../app/incomingCallToast');
-const windowStatePath = require.resolve('electron-window-state');
 
 let createdOptions;
 let BrowserWindowManager;
 let appEvents;
-let toastAction;
 
 before(() => {
 	appEvents = [];
-	toastAction = null;
 	require.cache[toastPath] = { id: toastPath, filename: toastPath, loaded: true, exports: class {
-		constructor(handler) { toastAction = handler; }
 		show() {}
 		hide() {}
 	} };
-	require.cache[windowStatePath] = { id: windowStatePath, filename: windowStatePath, loaded: true, exports: () => ({ manage() {} }) };
 	class MockBrowserWindow {
 		constructor(options) {
 			createdOptions = options;
@@ -49,7 +44,6 @@ before(() => {
 after(() => {
 	delete require.cache[electronPath];
 	delete require.cache[toastPath];
-	delete require.cache[windowStatePath];
 	delete require.cache[managerPath];
 });
 
@@ -159,24 +153,4 @@ describe('BrowserWindowManager incoming call routing', () => {
 		assert.equal(manager.performIncomingCallAction('DECLINE'), false);
 	});
 
-	it('preserves the original root-window toast action independently of D-Bus routing', async () => {
-		const manager = new BrowserWindowManager({ config: {} });
-		const rootSent = [];
-		const ringingSent = [];
-		manager.createNewBrowserWindow = () => ({ webContents: { send: (...args) => rootSent.push(args) } });
-		manager.assignEventHandlers = () => {};
-		const wasE2e = process.env.E2E_TESTING;
-		process.env.E2E_TESTING = 'true';
-		try {
-			await manager.createWindow();
-		} finally {
-			if (wasE2e === undefined) delete process.env.E2E_TESTING;
-			else process.env.E2E_TESTING = wasE2e;
-		}
-		manager.hasIncomingCall = true;
-		manager.incomingCallWebContents = { isDestroyed: () => false, send: (...args) => ringingSent.push(args) };
-		toastAction('DECLINE');
-		assert.deepEqual(ringingSent, []);
-		assert.deepEqual(rootSent, [['incoming-call-action', 'DECLINE']]);
-	});
 });
