@@ -134,7 +134,10 @@ class TeamsStateService extends EventEmitter {
 			this.emit('state-changed', current);
 		}
 		if (previous.microphoneControlState !== current.microphoneControlState) {
-			this.app.emit('teams-microphone-control-changed', current.microphoneControlState);
+			// This state service must not drive MQTT's legacy app-level channel.
+			// MQTTMediaStatusService remains its sole producer, with its original
+			// publish/deduplication timing and command-guard semantics intact.
+			this.emit('microphone-control-changed', current.microphoneControlState);
 		}
 	}
 
